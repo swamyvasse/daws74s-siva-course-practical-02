@@ -1,23 +1,69 @@
-- name: mysql-component
-  hosts: mysql
+- name: shipping-component
+  hosts: shipping
   become: yes
   tasks:
-    - name: disable MySQL 8 version
-      ansible.builtin.command: yum module disable mysql -y
-    - name: copy file /mysql.repo to /etc/yum.repos.d/mysql.repo
-      ansible.builtin.copy:
-        src: /etc/yum.repos.d/mysql.repo
-        dest: /mysql.repo
-    - name: Install MySQL Server
+    - name: install maven
       ansible.builtin.yum:
-        name: mysql-community-server
+        name: maven
         state: installed
-    - name: start mysqld
+    - name: check roboshop user exists or not
+      ansible.builtin.command: id roboshop
+      register: out
+      ignore_errors: true
+    - when: out.rc
+      name: create roboshop user
+      become: yes
+      ansible.builtin.user:
+        name: roboshop
+    - name: check /app directory exists or not
+      ansible.builtin.stat:
+        path: /app
+        register: directory
+    - name: print directory status
+      ansible.builtin.debug:
+        msg: "output: {{directory}}"
+    - when: directory stat.exists == False
+      name: create /app directory
+      ansible.builtin.file:
+        path: /app
+        state: directory
+    - name: download shipping artifact
+      ansible.builtin.get_url:
+        url: curl -L -o /tmp/shipping.zip
+          https://roboshop-builds.s3.amazonaws.com/shipping.zip
+        dest: /tmp
+    - name: extract shipping artifact
+      ansible.builtin.unarchive:
+        src: /tmp/shipping.zip
+        dest: /app
+        remote_src: yes
+    - name: download the dependencies & build the application
+      ansible.builtin.yum:
+        name: "{{item}}"
+        state: installed
+      loop:
+        - mvn clean package
+        - mv target/shipping-1.0.jar shipping.jar
+    - name: copy file /shipping.service to /etc/systemd/system/shipping.service
+      ansible.builtin.copy:
+        src: /etc/systemd/system/shipping.service
+        dest: /shipping.service
+    - name: daemon-reload
+      ansible.builtin.systemd:
+        daemon-reload: true
+    - name: start shipping
       ansible.builtin.service:
-        name: mysqld
+        name: shipping
         state: started
         enabled: yes
-    - name: default root password
-      ansible.builtin.command: mysql_secure_installation --set-root-pass RoboShop@1
-    - name: new password
-      ansible.builtin.command: mysql -uroot -pRoboShop@1
+    - name: install mysql
+      ansible.builtin.yum:
+        name: mysql
+        state: installed
+    - name: load data
+      ansible.builtin.command: mysql -h <MYSQL-SERVER-IPADDRESS> -uroot -pRoboShop@1 <
+        /app/schema/shipping.sql
+    - name: restart shipping
+      ansible.builtin.service:
+        name: shipping
+        state: restarted
